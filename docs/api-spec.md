@@ -19,7 +19,7 @@ Background Worker: Processes thumbnail-generation jobs asynchronously using a qu
 2. Upload Flow vs. Presigned Upload Flow
 
 Option A: Backend-Managed Upload
-
+Option A is best for this project
 The client sends the image to the backend.
 The backend streams the incoming bytes.
 The backend calculates the image’s SHA-256 hash while streaming.
