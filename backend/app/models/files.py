@@ -35,6 +35,13 @@ class File(Base):
         nullable=False,
     )
 
+    content_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        default="application/octet-stream",
+        server_default=text("'application/octet-stream'"),
+    )
+
     storage_key: Mapped[str] = mapped_column(
         String(500),
         unique=True,
@@ -110,7 +117,7 @@ class Quota(Base):
         nullable=False,
         server_default=text("0"),
     )
-
+# can be calculate instead,
     reserved_bytes: Mapped[int] = mapped_column(
         BigInteger,
         nullable=False,
