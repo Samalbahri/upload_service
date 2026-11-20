@@ -17,7 +17,8 @@ _TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 class AuthenticatedUser:
     user_id: str
 
-
+# reads the token hash from the environment variable and returns a dictionary of user_id to token_hash. Raises HTTPException if the configuration is missing or invalid.
+# return the authneticatedUser when match is found.
 def _configured_token_hashes() -> dict[str, str]:
     raw = os.getenv("UPLOAD_API_TOKEN_HASHES")
     if not raw:
@@ -44,6 +45,7 @@ def _configured_token_hashes() -> dict[str, str]:
     return configured
 
 
+# _configured_token_hashes() read server authenticate cinfiguratoin and put it in a expected format for get_current_user
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> AuthenticatedUser:

@@ -142,3 +142,41 @@ class Quota(Base):
             name="ck_quota_within_limit",
         ),
     )
+class ThumbnailJob(Base):
+    __tablename__ = "thumbnail_jobs"
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True
+    )
+    file_id: Mapped[int] = mapped_column(
+        ForeignKey("files.id"),
+        nullable=False,
+        index=True,
+        unique=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        server_default=text("'pending'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )

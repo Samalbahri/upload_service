@@ -1,10 +1,9 @@
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
-
+from app.repositories.thumbnail_jobs import create_thumbnail_job
 from app.auth import AuthenticatedUser, get_current_user
 from app.database import get_db
 from app.repositories.files import create_file, create_user_file, get_file_by_hash
@@ -18,12 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def finish_upload(db: Session, staged, filename: str, user_id: str):
+    #charge_quote uses SQL to update capacity and increase it usuage overtime
     try:
         if not charge_quota(db, user_id, staged.size_bytes):
             quota = get_quota(db, user_id)
             remaining = 0 if quota is None else quota.limit_bytes - quota.used_bytes - quota.reserved_bytes
             raise HTTPException(413, detail={"message": "Storage quota exceeded", "remaining_bytes": remaining})
-
+    
+    # checks for file if exisit get it by hash if not it creates it
         stored_file = get_file_by_hash(db, staged.sha256)
         if stored_file is None:
             storage_key = store_new_file(staged)
@@ -38,6 +39,7 @@ def finish_upload(db: Session, staged, filename: str, user_id: str):
                         storage_key,
                         staged.content_type,
                     )
+                    create_thumbnail_job(db, stored_file.id)
             except IntegrityError:
                 stored_file = get_file_by_hash(db, staged.sha256)
                 if stored_file is None:
@@ -65,6 +67,9 @@ async def upload_image(
     staged = None
     try:
         staged = await stage_stream(request.stream())
+        # write incoming bytes to temp file and update hash incrementally
+        # check bytes and reject anything aobve 50mb.
+        #this is suppose to return path,hash,size. content type is detected from the file extension.
         result = await run_in_threadpool(
             finish_upload,
             db,

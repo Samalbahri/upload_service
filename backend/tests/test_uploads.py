@@ -27,6 +27,9 @@ def _token_hash(token):
 
 @pytest.fixture
 def upload_system(tmp_path, monkeypatch):
+    from app.routes import files as file_routes
+    from app.services.thumbnail_cache import ThumbnailCache
+    monkeypatch.setattr(file_routes, "thumbnail_cache", ThumbnailCache())
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False, "timeout": 15})
     Base.metadata.create_all(engine)
     original_dir = tmp_path / "originals"
@@ -174,3 +177,109 @@ def test_request_id_and_upload_events_are_structured(upload_system, caplog):
     assert request_json["status_code"] == 201
     assert upload_json["upload_size_bytes"] == 5
     assert upload_json["file_id"] == response.json()["file_id"]
+
+
+def test_thumbnail_pending_ready_and_owned(upload_system, tmp_path, monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from app.services import thumbnails
+
+    engine, client, _ = upload_system
+    monkeypatch.setattr(thumbnails, "THUMBNAIL_DIR", tmp_path / "thumbnails")
+    uploaded = client.post("/api/v1/files", content=b"hello")
+    assert uploaded.status_code == 201
+    reference_id = uploaded.json()["file_id"]
+    url = f"/api/v1/files/{reference_id}/thumbnail"
+
+    pending = client.get(url)
+    assert pending.status_code == 202
+    assert pending.json() == {"thumbnail_status": "pending"}
+    assert pending.headers["cache-control"] == "private, no-store"
+    other_headers = {"Authorization": f"Bearer {OTHER_TOKEN}"}
+    assert client.get(url, headers=other_headers).status_code == 404
+    with TestClient(app) as anonymous:
+        assert anonymous.get(url).status_code == 401
+
+    original = tmp_path / "source.png"
+    with Image.new("RGB", (400, 300), "red") as image:
+        image.save(original)
+    with Session(engine) as db:
+        stored_file = db.get(File, db.get(UserFile, reference_id).file_id)
+        stored_file_id = stored_file.id
+        path = thumbnails.generate_thumbnail(original, stored_file.sha256)
+        stored_file.thumbnail_status = "ready"
+        db.commit()
+
+    ready = client.get(url)
+    assert ready.status_code == 200
+    assert ready.content == path.read_bytes()
+    assert ready.headers["content-type"] == "image/webp"
+    assert ready.headers["cache-control"] == "private, no-store"
+    assert ready.headers["x-content-type-options"] == "nosniff"
+    with Image.open(BytesIO(ready.content)) as image:
+        assert image.format == "WEBP"
+        assert image.size == (200, 150)
+    assert client.get(url, headers=other_headers).status_code == 404
+
+    from app.routes import files as file_routes
+    stats = client.get("/api/v1/metrics/thumbnail-cache")
+    assert stats.json()["misses"] == 1
+    assert stats.json()["hits"] == 0
+    # No disk object: the second fetch must come from cache.
+    path.unlink()
+    cached = client.get(url)
+    assert cached.status_code == 200
+    assert cached.content == ready.content
+    assert client.get("/api/v1/metrics/thumbnail-cache").json()["hits"] == 1
+    assert client.get(url, headers=other_headers).status_code == 404
+    assert client.get("/api/v1/metrics/thumbnail-cache").json()["hits"] == 1
+    # Simulate deleting this user's reference: cached bytes give no access.
+    with Session(engine) as db:
+        reference = db.get(UserFile, reference_id)
+        db.delete(reference)
+        db.commit()
+    assert client.get(url).status_code == 404
+    from app.services.thumbnail_cache import ThumbnailCache
+    file_routes.thumbnail_cache = ThumbnailCache()
+    # Restore the reference to exercise a true storage miss.
+    with Session(engine) as db:
+        db.add(UserFile(id=reference_id, user_id="demo-user", file_id=stored_file_id, filename="upload"))
+        db.commit()
+    missing = client.get(url)
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Thumbnail not found"
+
+
+def test_failed_thumbnail_serves_placeholder_and_queryable_state(upload_system):
+    engine, client, _ = upload_system
+    uploaded = client.post("/api/v1/files", content=b"hello")
+    reference_id = uploaded.json()["file_id"]
+    with Session(engine) as db:
+        stored_file = db.get(File, db.get(UserFile, reference_id).file_id)
+        stored_file.thumbnail_status = "failed"
+        db.commit()
+    response = client.get(f"/api/v1/files/{reference_id}/thumbnail")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    assert response.headers["x-thumbnail-status"] == "failed"
+    assert b"Preview unavailable" in response.content
+    assert client.get(f"/api/v1/files/{reference_id}").json()["thumbnail_status"] == "failed"
+    assert client.get(f"/api/v1/files/{reference_id}/thumbnail", headers={
+        "Authorization": f"Bearer {OTHER_TOKEN}",
+    }).status_code == 404
+
+
+def test_cache_metrics_require_authentication_and_exclude_pending_and_failed(upload_system):
+    engine, client, _ = upload_system
+    reference_id = client.post("/api/v1/files", content=b"hello").json()["file_id"]
+    url = f"/api/v1/files/{reference_id}/thumbnail"
+    assert client.get(url).status_code == 202
+    with Session(engine) as db:
+        db.get(File, db.get(UserFile, reference_id).file_id).thumbnail_status = "failed"
+        db.commit()
+    assert client.get(url).headers["x-thumbnail-status"] == "failed"
+    assert client.get("/api/v1/metrics/thumbnail-cache").json() == {
+        "hits": 0, "misses": 0, "size_bytes": 0, "entries": 0,
+    }
+    with TestClient(app) as anonymous:
+        assert anonymous.get("/api/v1/metrics/thumbnail-cache").status_code == 401
