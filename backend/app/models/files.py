@@ -180,3 +180,29 @@ class ThumbnailJob(Base):
         String(500),
         nullable=True,
     )
+
+class UploadRateLimit(Base):
+    __tablename__ = "upload_rate_limits"
+
+    user_id: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "attempts >= 0",
+            name="ck_upload_rate_limits_attempts_nonnegative",
+        ),
+    )

@@ -5,15 +5,22 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.repositories.thumbnail_jobs import create_thumbnail_job
 from app.auth import AuthenticatedUser, get_current_user
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.repositories.files import create_file, create_user_file, get_file_by_hash
 from app.repositories.quota import charge_quota, get_quota
+from app.repositories.upload_rate_limits import admit_upload
 from app.services.storage import (
     ContentCollision, STORAGE_DIR, stage_stream, store_new_file, verify_same_content,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def check_upload_rate_limit(user_id: str) -> int:
+    # Commit independently: an admitted attempt counts even if upload fails.
+    with SessionLocal.begin() as db:
+        return admit_upload(db, user_id)
 
 
 def finish_upload(db: Session, staged, filename: str, user_id: str):
@@ -66,6 +73,13 @@ async def upload_image(
 ):
     staged = None
     try:
+        retry_after = await run_in_threadpool(check_upload_rate_limit, user.user_id)
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail="Upload rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
         staged = await stage_stream(request.stream())
         # write incoming bytes to temp file and update hash incrementally
         # check bytes and reject anything aobve 50mb.

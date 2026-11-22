@@ -1,0 +1,6 @@
+/backend/loadtest/run.json
+/backend/loadtest/.env
+/backend/loadtest/runs/
+/backend/loadtest/results.json
+/backend/loadtest/report.json
+/backend/loadtest/compressedImages/

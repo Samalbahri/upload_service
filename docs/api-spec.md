@@ -101,3 +101,65 @@ HTTP 201 Created
   "content_type": "image/jpeg"
 }
 The upload succeeds without waiting for thumbnail generation to finish. The thumbnail is processed asynchronously by the background worker.
+## Thumbnail cache (task 2.3)
+
+Ready thumbnail fetches authenticate the caller and check ownership and current
+thumbnail status before accessing a process-local LRU cache. Pending responses
+and failure placeholders are not cached. Internal immutable keys include the
+original SHA-256, bounding dimensions, WebP format, and recipe version:
+`<sha256>:200x200:webp:v1`. A recipe change must change both the cache key and the
+thumbnail storage filename/version in `services/thumbnails.py`.
+
+The cache holds at most 16 MiB of payload bytes (Python overhead and in-flight
+responses are additional). Oversized values are served without caching. Entries
+are evicted in least-recently-used order. Each API process has independent data
+and counters, which reset on restart; this is not a distributed cache. Concurrent
+cold requests may each read storage before one populates the cache.
+
+`GET /api/v1/metrics/thumbnail-cache` requires a valid bearer token and returns
+aggregate `hits`, `misses`, `size_bytes`, and `entries` for the serving process.
+It exposes no file keys or user identifiers. A missing ready object counts as a
+cache miss. To demonstrate a hit, fetch the same ready thumbnail twice on one
+fresh API process and compare counters before and after: one miss then one hit.
+HTTP responses retain `Cache-Control: private, no-store`; this controls client
+and intermediary caching independently of the internal cache.
+
+Deletion policy: removing a user reference immediately removes that reference's
+access, including on cache hits. Shared originals and thumbnails remain while
+other user references exist. Once the last reference is removed, both physical
+objects become eligible for coordinated orphan/garbage collection with a grace
+period and publisher synchronization. Cached immutable bytes may remain until
+LRU eviction or process restart, but cannot be fetched through deleted references.
+There is no delete endpoint or garbage collector implemented yet; this is the
+policy they must follow. Missing backing files do not invalidate a warm cache.
+
+## Upload rate limiting and quota responses (task 2.4)
+
+Each authenticated user may make 10 admitted upload attempts per 60-second fixed
+window, beginning with their first admitted attempt. A window resets on the next
+attempt after expiry; this is not a rolling-window limit and can allow bursts
+across a boundary. PostgreSQL stores the per-user counter. Row locking and
+conflict-safe insertion enforce the same allowance across API processes.
+
+Admission is checked before application-level body streaming and committed in a
+separate short transaction. An admitted attempt counts even if upload processing
+later fails, including quota rejection or an oversized body. Authentication
+failures do not count. Rate-limit rejections do not increment or extend the
+window. This limits attempts, not concurrent connections or network buffering.
+
+Excess attempts receive HTTP 429 with `detail: "Upload rate limit exceeded"` and
+an integer `Retry-After` header in seconds (rounded up, minimum 1). After waiting,
+clients may retry; intervening requests may consume the new allowance.
+
+Quota is checked separately and atomically. Insufficient quota returns HTTP 413
+with `detail: {"message": "Storage quota exceeded", "remaining_bytes": N}`.
+Remaining bytes subtract both used and reserved bytes. A missing quota row also
+reports zero remaining; users must be provisioned with a quota row. Rejected
+uploads create no user reference or quota charge, but retain their admitted
+rate-limit attempt. Oversized uploads also return 413 with a size-limit message.
+
+Integration tests in `tests/test_upload_rate_limits.py` require
+`TEST_DATABASE_URL` pointing to PostgreSQL's dedicated `upload_service_test`
+database. They create and remove isolated schemas, covering bursts, user
+isolation, expiry, concurrent admission, first-row races, and an actual HTTP
+quota failure followed by rate-limit rejection.

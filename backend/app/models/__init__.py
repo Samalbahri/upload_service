@@ -1,1 +1,1 @@
-from .files import File, UserFile, Quota, ThumbnailJob
+from .files import File, UserFile, Quota, ThumbnailJob, UploadRateLimit

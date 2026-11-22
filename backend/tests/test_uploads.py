@@ -27,6 +27,8 @@ def _token_hash(token):
 
 @pytest.fixture
 def upload_system(tmp_path, monkeypatch):
+    # These SQLite tests isolate upload behavior; limiter SQL requires PostgreSQL.
+    monkeypatch.setattr(uploads, "check_upload_rate_limit", lambda user_id: 0)
     from app.routes import files as file_routes
     from app.services.thumbnail_cache import ThumbnailCache
     monkeypatch.setattr(file_routes, "thumbnail_cache", ThumbnailCache())
@@ -283,3 +285,21 @@ def test_cache_metrics_require_authentication_and_exclude_pending_and_failed(upl
     }
     with TestClient(app) as anonymous:
         assert anonymous.get("/api/v1/metrics/thumbnail-cache").status_code == 401
+
+
+
+def test_rate_limit_rejects_before_staging(upload_system, monkeypatch):
+    _, client, directory = upload_system
+    seen = []
+    def reject(user_id):
+        seen.append(user_id)
+        return 12
+    async def unexpected_stage(chunks):
+        pytest.fail("Rejected request must not stage its body")
+    monkeypatch.setattr(uploads, "check_upload_rate_limit", reject)
+    monkeypatch.setattr(uploads, "stage_stream", unexpected_stage)
+    response = client.post("/api/v1/files", content=b"hello")
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "12"
+    assert seen == ["demo-user"]
+    assert not directory.exists()

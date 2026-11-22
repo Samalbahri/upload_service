@@ -1,32 +1,50 @@
-# React + TypeScript + Vite
+# Still — image workspace
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React frontend for the existing FastAPI upload service. Includes token connection,
+raw-body uploads with transfer progress, drag-and-drop/batch selection, thumbnail
+polling and failure placeholders, search/status filters, existing-reference lookup,
+and authenticated original downloads. Tokens are kept in memory, never browser
+storage. Disconnect clears the session and aborts active requests.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Start PostgreSQL, apply backend migrations, and run the backend API on port 8000
+and thumbnail worker as described in the project walkthrough. Configure a bearer
+token hash and matching quota row on the backend. Use the original token in the UI.
 
-## React Compiler
+From `frontend`:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Open http://localhost:5173. Vite proxies `/api` to `http://127.0.0.1:8000`, so
+browser requests stay on the frontend origin. To use a different local backend,
+set `BACKEND_URL` in `frontend/.env.local` (e.g. `http://127.0.0.1:8001`). Restart
+Vite after changing it. Do not commit credentials or prefill a token in build variables.
+
+The backend has no list endpoint: the gallery contains this session's uploads and
+references opened explicitly by ID. Refresh clears the token and gallery. This is
+API-token authentication; there is no signup/login or delete UI because those
+backend endpoints do not exist. Status filters keep polling hidden pending cards.
+
+## Validate and build
+
+```sh
+npm test
+npm run build
+```
+
+API tests use mocked HTTP/XHR and cover credentials, raw uploads, progress,
+cancellation, and error messages. They do not replace browser integration testing.
+
+The Vite development proxy is not part of the production bundle. Serve production
+`dist/` behind an HTTPS reverse proxy routing `/api` to FastAPI, or set the
+build-time `VITE_API_BASE_URL` to the full HTTPS API prefix (ending in `/api/v1`)
+and configure backend CORS for that exact frontend origin. Never serve a token
+workflow over public plain HTTP. No hosting deployment is configured here.
+
+Manual check: connect with a valid token; upload a real image; stop/start the
+worker to see pending then ready; download and compare the original; reopen a
+reference by ID; test a second user's access, bad tokens, exhausted quota, and a
+burst beyond the upload limit. Inspect at narrow and wide viewport sizes.
